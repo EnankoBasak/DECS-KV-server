@@ -10,11 +10,10 @@
 #include <string>
 
 // Include the necessary header for the HTTP client. 
-// Assumes cpp-httplib.h is in the include path or local directory.
-#include "httplib.h"
+#include <httplib.h>
 
 // --- Configuration Constants ---
-const std::string DEFAULT_SERVER_URL = "http://localhost";
+const std::string DEFAULT_SERVER_URL = "localhost";
 const int DEFAULT_SERVER_PORT = 8080;
 const std::string DEFAULT_ENDPOINT = "/kv/";
 // Key space size for the "Get Popular" workload (e.g., keys 0-99) [1]
@@ -46,7 +45,8 @@ std::string generate_key(std::mt19937& rng) {
  * @return True if the request was successful (HTTP 2xx status), false otherwise.
  */
 bool execute_request(httplib::Client& client, const std::string& key) {
-    std::string path = DEFAULT_ENDPOINT + key;
+    std::string path = "/get?key=" + key; // if server expects query param
+
     
     // Execute GET operation [1]
     if (auto res = client.Get(path)) {
@@ -60,7 +60,7 @@ bool execute_request(httplib::Client& client, const std::string& key) {
         }
     } else {
         // Handle connection or socket error (e.g., timeout, refused connection) [1]
-        // std::cerr << "Connection error: " << httplib::to_string(res.error()) << " for key: " << key << std::endl;
+        std::cerr << "Connection error: " << httplib::to_string(res.error()) << " for key: " << key << std::endl;
         return false;
     }
 }
@@ -113,7 +113,7 @@ void client_worker(
 
 // --- Main Execution and Reporting ---
 
-int main(int argc, char* argv) {
+int main(int argc, char* argv[]) {
     // 1. Configure Command-Line Flags and Defaults
     int concurrency = 1;
     int duration_sec = 10;
@@ -130,15 +130,13 @@ int main(int argc, char* argv) {
 
         if (port_sep!= std::string::npos) {
             host = url_str.substr(host_start, port_sep - host_start);
-            port = std::atoi(url_str.substr(port_sep + 1));
+            port = std::atoi(url_str.substr(port_sep + 1).c_str());
         } else {
             host = url_str.substr(host_start);
         }
     }
     
-    if (concurrency <= 0 |
-
-| duration_sec <= 0) {
+    if (concurrency <= 0 || duration_sec <= 0) {
         std::cerr << "Error: Concurrency and duration must be positive integers." << std::endl;
         return 1;
     }
