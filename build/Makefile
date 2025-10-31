@@ -2,7 +2,7 @@ CXX = g++
 CXXFLAGS = -g -std=c++17 -Wall -Wextra -O3 -I $(ROOT_DIR)/include/
 LDFLAGS  = -L./lib64 -lmysqlcppconn8 -lpthread
 
-ROOT_DIR = ../
+ROOT_DIR = ..
 
 # Source files
 SERVER_SRC = $(ROOT_DIR)/src/server/KVServer.cpp
