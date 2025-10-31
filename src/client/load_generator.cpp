@@ -44,9 +44,9 @@ std::string generate_key(std::mt19937& rng) {
  * @param key The key to retrieve.
  * @return True if the request was successful (HTTP 2xx status), false otherwise.
  */
-bool execute_request(httplib::Client& client, const std::string& key) {
+bool execute_request(httplib::Client& client, const std::string& key) 
+{
     std::string path = "/get?key=" + key; // if server expects query param
-
     
     // Execute GET operation [1]
     if (auto res = client.Get(path)) {

@@ -16,7 +16,7 @@ public:
     void Put(const Key& key, const Value& value) ; 
 
     // Gets a value by its key. Returns std::nullopt if not found.
-    std::optional<Value> Get(const Key& key) ; 
+    bool Get(const Key& key, Value &ret_val) ; 
 
     // Deletes an item from the cache.
     void Erase(const Key& key) ; 
@@ -41,13 +41,14 @@ LRUCache<Key, Value>::LRUCache (size_t capacity):
 template <typename Key, typename Value>
 void LRUCache<Key, Value>::Put(const Key& key, const Value& value)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+    _mutex.lock() ;
 
     // If key exists, update value and move to front.
     auto it = _item_map.find(key);
     if (it != _item_map.end()) {
         it->second->second = value;
         _item_list.splice(_item_list.begin(), _item_list, it->second);
+        _mutex.unlock() ;
         return;
     }
 
@@ -61,33 +62,38 @@ void LRUCache<Key, Value>::Put(const Key& key, const Value& value)
     // Add the new item to the front.
     _item_list.emplace_front(key, value);
     _item_map[key] = _item_list.begin();
+    _mutex.unlock() ;
 }
 
 
 template <typename Key, typename Value>
-std::optional<Value> LRUCache<Key, Value>::Get(const Key& key) {
-    std::lock_guard<std::mutex> lock(_mutex);
+bool LRUCache<Key, Value>::Get(const Key& key, Value &ret_val) {
+    _mutex.lock() ;
 
     auto it = _item_map.find(key);
     if (it == _item_map.end()) {
-        return std::nullopt; // Cache Miss
+        _mutex.unlock() ;
+        return false ; // Cache Miss
     }
 
     // Move accessed item to the front of the list.
     _item_list.splice(_item_list.begin(), _item_list, it->second);
-    return it->second->second; // Cache Hit
+    ret_val = it->second->second; // Cache Hit
+    _mutex.unlock() ;
+    return true ;
 }
 
 
 template <typename Key, typename Value>
 void LRUCache<Key, Value>::Erase(const Key& key) {
-    std::lock_guard<std::mutex> lock(_mutex);
+    _mutex.lock() ;
 
     auto it = _item_map.find(key);
     if (it != _item_map.end()) {
         _item_list.erase(it->second);
         _item_map.erase(it);
     }
+    _mutex.unlock() ;
 }
 
 

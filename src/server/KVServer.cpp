@@ -66,16 +66,22 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
     }
     
     std::string value ;
-    bool cache_hit = false ;
-    (void) cache_hit ;
     
-    // FIXME
-    /* ----------------------------------------------- */ 
-    //      NEED TO CHECK CACHE BEFORE GOING TO DB
-    /* ----------------------------------------------- */ 
+    int int_key = 0;
+    try {
+        int_key = std::stoi(key_param);
+    } catch (const std::exception &e) {
+        res.status = 400;
+        res.set_content("Key must be an integer", "text/plain");
+        return;
+    }
 
-
-    int int_key = std::stoi(key_param) ;
+    if (_cache.Get(int_key, value)) {
+        // Cache Hit: Read the value from the cache and return immediately 
+        res.status = 200 ; // OK
+        res.set_content(value, "text/plain") ;
+        return ; // Skip the database access and mutex lock
+    }
 
     // Lock
     // ------------------ Critical Region Begins --------------------------------
@@ -124,22 +130,43 @@ void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
         return ;
     }
 
-    bool cache_hit = false ;
-    (void) cache_hit ;
-    // FIXME
-    /* ----------------------------------------------- */ 
-    //      NEED TO CHECK CACHE BEFORE GOING TO DB
-    /* ----------------------------------------------- */ 
+    int int_key = 0;
+    try {
+        int_key = std::stoi(key_param);
+    } catch (const std::exception &e) {
+        res.status = 400;
+        res.set_content("Key must be an integer", "text/plain");
+        return;
+    }
 
 
     // Lock
     // ------------------ Critical Region Begins --------------------------------
     _db_mutex.lock() ;
+    try {
+        _kv_table.insert("k", "value")
+                .values(int_key, value_param)
+                .execute() ;
+        _db_mutex.unlock() ;        // Unlock the DB
 
+        // Update the cache.
+        _cache.Put(int_key, value_param);
 
-
+        res.status = 200;
+        res.set_content("Key-value pair stored successfully", "text/plain");
+    } catch (const mysqlx::Error &e) {
+        _db_mutex.unlock() ; // ensure DB mutex is unlocked on error
+        res.status = 503 ;
+        res.set_content(std::string("Database write failed: ") + e.what(), "text/plain") ;
+    } catch (const std::exception &e) {
+        _db_mutex.unlock() ; // ensure DB mutex is unlocked on error
+        res.status = 500 ;
+        res.set_content(std::string("Server error: ") + e.what(), "text/plain") ;
+        return ;
+    }
     // ------------------ Critical Region Ends --------------------------------
     // Unlock
+
 }
 
 void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
