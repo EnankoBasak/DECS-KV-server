@@ -4,195 +4,289 @@
 #include <chrono>
 #include <atomic>
 #include <string>
-#include <sstream>
 #include <random>
-#include <stdexcept>
-#include <string>
+#include <algorithm>
 
-// Include the necessary header for the HTTP client. 
-#include <httplib.h>
+#include "httplib.h"
 
 // --- Configuration Constants ---
-const std::string DEFAULT_SERVER_URL = "localhost";
-const int DEFAULT_SERVER_PORT = 8080;
-const std::string DEFAULT_ENDPOINT = "/kv/";
-// Key space size for the "Get Popular" workload (e.g., keys 0-99) [1]
-const int KEY_SPACE_SIZE = 100;
+const std::string DEFAULT_SERVER_URL = "localhost" ;
+const int DEFAULT_SERVER_PORT = 8080 ;
+const int DEFAULT_TIMEOUT = 5  ;
+
+// Key space size limits
+const long long LARGE_KEY_SPACE = 1000000 ; // For Put All / Get All / Delete All
+const int SMALL_KEY_SPACE = 100 ;         // For Get Popular
+const size_t VALUE_SIZE = 256 ;           // Payload size
+
+static const char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" ;
+
+// Enum to define the executable workload type
+enum WorkloadType {
+    PUT_ALL,
+    GET_ALL,
+    DELETE_ALL,
+    GET_POPULAR,
+    GET_PUT_MIX,
+    GET_DELETE_MIX
+} ;
 
 // --- Shared Metrics Structure ---
 struct SharedMetrics {
-    // Atomic variables for thread-safe accumulation without heavy locking
-    std::atomic<long long> total_successful_requests{0};
-    std::atomic<long long> total_latency_ns{0}; // Nanoseconds
-};
+    std::atomic<long long> total_successful_requests{0} ;
+    std::atomic<long long> total_latency_ns{0} ; // Nanoseconds
+    std::atomic<long long> total_requests_sent{0} ;
+} ;
 
-// --- Request Generation Logic ---
+// --- Key/Value Generation Logic ---
 
 /**
- * @brief Generates a key suitable for the "Get Popular" workload.
- * It randomly selects a key index from a small, fixed range. [1]
+ * @brief Generates a unique integer key (used for Put All / Get All / Delete All).
+ * Keys wrap around the LARGE_KEY_SPACE to prevent running out of key IDs while 
+ * maintaining a consistent workload that hits the database. 
  */
-std::string generate_key(std::mt19937& rng) {
-    std::uniform_int_distribution<int> dist(0, KEY_SPACE_SIZE - 1);
-    int key_index = dist(rng);
-    return "key-" + std::to_string(key_index);
+long long generate_unique_key() {
+    static std::atomic<long long> counter{1} ; 
+    long long current_key = counter.fetch_add(1) ;
+    return (current_key % LARGE_KEY_SPACE) + 1 ; 
 }
 
 /**
- * @brief Executes a single HTTP GET request.
- * @param client The cpp-httplib client object.
- * @param key The key to retrieve.
- * @return True if the request was successful (HTTP 2xx status), false otherwise.
+ * @brief Generates a popular key (used for Get Popular to force cache hits).
  */
-bool execute_request(httplib::Client& client, const std::string& key) 
-{
-    std::string path = "/get?key=" + key; // if server expects query param
+long long generate_popular_key(std::mt19937& rng) {
+    std::uniform_int_distribution<int> dist(1, SMALL_KEY_SPACE) ; 
+    return dist(rng) ;
+}
+
+/**
+ * @brief Generates a random value string of fixed size.
+ */
+std::string generate_value() {
+    std::string result(VALUE_SIZE, 0) ;
     
-    // Execute GET operation [1]
-    if (auto res = client.Get(path)) {
-        // Successful connection, now check HTTP status code
-        if (res->status >= 200 && res->status < 300) {
-            return true;
-        } else {
-            // Handle unexpected status codes
-            // std::cerr << "Request failed with status: " << res->status << " for key: " << key << std::endl;
-            return false;
-        }
-    } else {
-        // Handle connection or socket error (e.g., timeout, refused connection) [1]
-        std::cerr << "Connection error: " << httplib::to_string(res.error()) << " for key: " << key << std::endl;
-        return false;
+    thread_local static std::mt19937 generator(std::random_device{}()) ;
+    thread_local static std::uniform_int_distribution<> distribution(0, sizeof(charset) - 2) ;
+
+    for (size_t i = 0 ; i < VALUE_SIZE ; ++i) {
+        result[i] = charset[distribution(generator)] ;
     }
+    return result ;
+}
+
+// --- Request Execution Functions ---
+
+bool execute_get(httplib::Client& client, const std::string& key) 
+{
+    std::string path_with_params = "/get?key=" + key ;
+    if (auto res = client.Get(path_with_params)) {
+        return (res->status == 200)  ;
+    }
+    return false ;
+}
+
+bool execute_put(httplib::Client& client, const std::string& key) 
+{
+    std::string value = generate_value() ;
+    std::string path_with_params = "/put?key=" + key + "&value=" + value ;
+    if (auto res = client.Put(path_with_params, "", "text/plain")) {
+        return (res->status == 200)  ; 
+    }
+    return false ;
+}
+
+bool execute_delete(httplib::Client& client, const std::string& key) 
+{
+    std::string path_with_params = "/delete?key=" + key ;
+    if (auto res = client.Delete(path_with_params)) {
+        // 200 OK (deleted) or 404 (not found, which is functionally equivalent to deleted)
+        return (res->status == 200 || res->status == 404)  ; 
+    }
+    return false ;
+}
+
+bool execute_popular(httplib::Client& client) 
+{
+    std::string path_with_params = "/get_popular" ;
+    if (auto res = client.Get(path_with_params)) {
+        return (res->status == 200)  ;
+    }
+    return false ;
 }
 
 // --- Core Load Generation Logic ---
 
 /**
- * @brief Represents a single client thread in the closed loop.
- * A closed-loop client sends a request, waits for the response, and immediately sends the next one. [1]
+ * @brief Executes one request based on the selected workload type.
  */
-void client_worker(
-    int id,
-    const std::string& host,
-    int port,
-    std::chrono::seconds duration,
-    SharedMetrics* metrics) 
+bool execute_workload_request( httplib::Client& client, WorkloadType workload, std::mt19937& rng) 
 {
-    // Use a unique random number generator for thread-safe key generation
-    std::mt19937 rng(std::random_device{}() + id);
+    long long key_int = 0 ;
+    std::string key_str ;
     
-    // Initialize the HTTP client for this thread
-    httplib::Client client(host, port);
-    client.set_connection_timeout(std::chrono::seconds(5)); // Set client timeout
-    client.set_read_timeout(std::chrono::seconds(5));
-    client.set_write_timeout(std::chrono::seconds(5));
+    switch (workload) {
+        case PUT_ALL:
+            // Put All: Unique key, forces DB write 
+            key_int = generate_unique_key() ;
+            key_str = std::to_string(key_int) ;
+            return execute_put(client, key_str) ;
 
-    auto start_time = std::chrono::steady_clock::now();
-    auto end_test_time = start_time + duration;
+        case GET_ALL:
+            // Get All: Unique key, forces Cache Miss -> DB read 
+            key_int = generate_unique_key() ;
+            key_str = std::to_string(key_int) ;
+            return execute_get(client, key_str) ;
+            
+        case DELETE_ALL:
+            // Delete All: Unique key, forces DB delete & Cache invalidation 
+            key_int = generate_unique_key() ;
+            key_str = std::to_string(key_int) ;
+            return execute_delete(client, key_str) ;
+
+        case GET_POPULAR:
+            // Get Popular: Repeated keys, forces Cache Hit -> CPU bound 
+            key_int = generate_popular_key(rng) ;
+            key_str = std::to_string(key_int) ;
+            return execute_popular(client) ;
+
+        case GET_PUT_MIX:
+        case GET_DELETE_MIX: {
+            // Mixed Workloads: Use unique keys to ensure a blend of cache hits and misses
+            key_int = generate_unique_key() ;
+            key_str = std::to_string(key_int) ;
+            
+            // Randomly choose the operation (50/50 split)
+            if (rng() % 2 == 0) {
+                return execute_get(client, key_str) ;
+            } else {
+                if (workload == GET_PUT_MIX) {
+                    return execute_put(client, key_str) ;
+                } else { // GET_DELETE_MIX
+                    return execute_delete(client, key_str) ;
+                }
+            }
+        }
+
+        default:
+            return false ; 
+    }
+}
+
+/**
+ * @brief Represents a single client thread in the closed loop.
+ */
+// void client_worker( int id, const std::string& host, int port, std::chrono::seconds duration, WorkloadType workload, SharedMetrics* metrics)
+void client_worker( int id, int port, std::chrono::seconds duration, WorkloadType workload, SharedMetrics* metrics) 
+{
+    std::mt19937 rng(std::random_device{}() + id) ;
+    
+    httplib::Client client(DEFAULT_SERVER_URL, port) ;
+    client.set_connection_timeout(std::chrono::seconds(DEFAULT_TIMEOUT)) ;
+    client.set_read_timeout(std::chrono::seconds(DEFAULT_TIMEOUT)) ;
+    client.set_write_timeout(std::chrono::seconds(DEFAULT_TIMEOUT)) ;
+
+    auto end_test_time = std::chrono::steady_clock::now() + duration ;
 
     // Closed-loop execution
     while (std::chrono::steady_clock::now() < end_test_time) {
         
-        std::string key = generate_key(rng);
-        auto request_start = std::chrono::steady_clock::now();
+        auto request_start = std::chrono::steady_clock::now() ;
+        bool success = execute_workload_request(client, workload, rng) ;
+        auto request_end = std::chrono::steady_clock::now() ;
         
-        bool success = execute_request(client, key);
-        
-        auto request_end = std::chrono::steady_clock::now();
-        
-        // Measure and record metrics
+        metrics->total_requests_sent.fetch_add(1) ;
         if (success) {
-            auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(request_end - request_start);
-            metrics->total_successful_requests.fetch_add(1);
-            metrics->total_latency_ns.fetch_add(latency.count());
+            auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(request_end - request_start) ;
+            metrics->total_successful_requests.fetch_add(1) ;
+            metrics->total_latency_ns.fetch_add(latency.count()) ;
         }
-        
-        // Note: No sleep here, fulfilling the "zero think time" requirement [1]
     }
 }
 
 // --- Main Execution and Reporting ---
 
+WorkloadType parse_workload(const std::string& w_str) {
+    if (w_str == "put") return PUT_ALL ;
+    if (w_str == "get") return GET_ALL ;
+    if (w_str == "delete") return DELETE_ALL ;
+    if (w_str == "get_popular") return GET_POPULAR ;
+    if (w_str == "get_put_mix") return GET_PUT_MIX ;
+    if (w_str == "get_delete_mix") return GET_DELETE_MIX ;
+    throw std::invalid_argument("Invalid workload type: " + w_str) ;
+}
+
 int main(int argc, char* argv[]) {
-    // 1. Configure Command-Line Flags and Defaults
-    int concurrency = 1;
-    int duration_sec = 10;
-    std::string host = DEFAULT_SERVER_URL;
-    int port = DEFAULT_SERVER_PORT;
-
-    if (argc >= 2) concurrency = std::atoi(argv[1]);
-    if (argc >= 3) duration_sec = std::atoi(argv[2]);
-    if (argc >= 4) {
-        // Simple URL parsing: assumes http://host:port
-        std::string url_str = argv[3];
-        size_t host_start = url_str.find("://") + 3;
-        size_t port_sep = url_str.find(':', host_start);
-
-        if (port_sep!= std::string::npos) {
-            host = url_str.substr(host_start, port_sep - host_start);
-            port = std::atoi(url_str.substr(port_sep + 1).c_str());
-        } else {
-            host = url_str.substr(host_start);
-        }
-    }
+    // Default Parameters
+    int concurrency = 1 ;
+    int duration_sec = 10 ;
+    // std::string host = DEFAULT_SERVER_URL ;
+    int port = DEFAULT_SERVER_PORT ;
+    std::string workload_str = "get_popular" ;
     
-    if (concurrency <= 0 || duration_sec <= 0) {
-        std::cerr << "Error: Concurrency and duration must be positive integers." << std::endl;
-        return 1;
-    }
+    // Argument Parsing: Expects <concurrency> <duration> <workload> [url:port]
+    if (argc >= 2) concurrency = std::stoi(argv[1]) ;
+    if (argc >= 3) duration_sec = std::stoi(argv[2]) ;
+    if (argc >= 4) workload_str = argv[3] ;
 
-    std::cout << "Starting C++ Load Test (Get Popular Workload):" << std::endl;
-    std::cout << "  Target URL: " << host << ":" << port << DEFAULT_ENDPOINT << std::endl;
-    std::cout << "  Concurrency (-c): " << concurrency << " threads" << std::endl;
-    std::cout << "  Duration (-d): " << duration_sec << " seconds" << std::endl;
-
-    // 2. Setup Resources
-    SharedMetrics metrics;
-    std::vector<std::thread> workers;
-    std::chrono::seconds test_duration(duration_sec);
-
-    // 3. Launch Workers
-    auto test_start_time = std::chrono::steady_clock::now();
-    for (int i = 0; i < concurrency; ++i) {
-        workers.emplace_back(client_worker, i, host, port, test_duration, &metrics);
-    }
-
-    // 4. Wait for all threads to finish their full duration
-    for (auto& worker : workers) {
-        if (worker.joinable()) {
-            worker.join();
-        }
-    }
-    auto test_end_time = std::chrono::steady_clock::now();
-
-    // Actual measured duration
-    auto actual_duration = std::chrono::duration_cast<std::chrono::duration<double>>(test_end_time - test_start_time);
-
-    // 5. Calculate and Display Final Metrics [1]
-    std::cout << "\n--- Load Test Summary ---" << std::endl;
-
-    long long successful_requests = metrics.total_successful_requests.load();
-
-    if (successful_requests > 0) {
-        double duration_s = actual_duration.count();
-        double total_latency_ms = (double)metrics.total_latency_ns.load() / 1e6; // Convert total nanoseconds to milliseconds
-
-        // Average Throughput (req/s)
-        double avg_throughput = (double)successful_requests / duration_s;
+    try {
+        WorkloadType workload = parse_workload(workload_str) ;
         
-        // Average Response Time (ms)
-        double avg_response_time = total_latency_ms / (double)successful_requests;
+        if (concurrency <= 0 || duration_sec <= 0) {
+            std::cerr << "Error: Concurrency and duration must be positive integers." << std::endl ;
+            return 1 ;
+        }
 
-        std::cout << "Total Successful Requests: " << successful_requests << std::endl;
-        std::cout << "Test Duration: " << std::fixed << std::setprecision(2) << duration_s << " s" << std::endl;
-        std::cout << "Average Throughput: " << std::fixed << std::setprecision(2) << avg_throughput << " req/s" << std::endl;
-        std::cout << "Average Response Time: " << std::fixed << std::setprecision(3) << avg_response_time << " ms" << std::endl;
+        std::cout << "Starting Unified Load Test:" << std::endl ;
+        std::cout << "  Workload: " << workload_str << std::endl ;
+        //... other prints...
 
-    } else {
-        std::cout << "No successful requests completed. Check server connection." << std::endl;
+        // Execution logic (omitted for brevity, same as before)
+        SharedMetrics metrics ;
+        std::vector<std::thread> workers ;
+        std::chrono::seconds test_duration(duration_sec) ;
+        
+        auto test_start_time = std::chrono::steady_clock::now() ;
+        for (int i = 0 ; i < concurrency ; ++i) {
+            // workers.emplace_back(client_worker, i, host, port, test_duration, workload, &metrics) ;
+            workers.emplace_back(client_worker, i, port, test_duration, workload, &metrics) ;
+        }
+
+        for (auto& worker : workers) {
+            if (worker.joinable()) {
+                worker.join() ;
+            }
+        }
+        auto test_end_time = std::chrono::steady_clock::now() ;
+
+
+        // Reporting logic 
+        auto actual_duration = std::chrono::duration_cast<std::chrono::duration<double>>(test_end_time - test_start_time) ;
+        long long successful_requests = metrics.total_successful_requests.load() ;
+
+        std::cout << "\n--- Load Test Summary ---" << std::endl ;
+        
+        if (successful_requests > 0) {
+            double duration_s = actual_duration.count() ;
+            double total_latency_ms = (double)metrics.total_latency_ns.load() / 1e6 ;
+
+            double avg_throughput = (double)successful_requests / duration_s ;
+            double avg_response_time = total_latency_ms / (double)successful_requests ;
+
+            std::cout << "Total Successful Requests: " << successful_requests << std::endl ;
+            std::cout << "Test Duration: " << std::fixed << std::setprecision(2) << duration_s << " s" << std::endl ;
+            std::cout << "Average Throughput: " << std::fixed << std::setprecision(2) << avg_throughput << " req/s" << std::endl ;
+            std::cout << "Average Response Time: " << std::fixed << std::setprecision(3) << avg_response_time << " ms" << std::endl ;
+
+        } else {
+            std::cout << "No successful requests completed." << std::endl ;
+        }
+
+        std::cout << "-------------------------" << std::endl ;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error during setup or execution: " << e.what() << std::endl ;
+        std::cerr << "Supported workloads: put_all, get_all, delete_all, get_popular, get_put_mix, get_delete_mix" << std::endl ;
+        return 1 ;
     }
-
-    std::cout << "-------------------------" << std::endl;
-
-    return 0;
+    return 0 ;
 }
