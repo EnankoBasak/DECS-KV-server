@@ -257,7 +257,7 @@ void KVServer::Run(int port)
 
     // This will accept new connections and process each in its own thread
     if (!_http_server.listen("0.0.0.0", port)) {
-        std::cerr << "❌ Failed to bind to port " << port << std::endl;
+        std::cerr << "Failed to bind to port " << port << std::endl;
     }
 }
 
@@ -265,7 +265,6 @@ void KVServer::Run(int port)
 int main()
 {
     KVServer server("kvuser", "#Jhuma1611", "localhost", "kvstore", 100) ;
-    // while(1) ;
     return 0 ;
 }
 
