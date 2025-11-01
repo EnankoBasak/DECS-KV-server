@@ -4,7 +4,7 @@
 #include <list>
 #include <unordered_map>
 #include <mutex>
-#include <optional>
+#include <string>
 
 
 template <typename Key, typename Value>
@@ -21,7 +21,10 @@ public:
     // Deletes an item from the cache.
     void Erase(const Key& key) ; 
 
-    size_t Capacity()           { return _capacity ; }
+    // Return the contents of the cache in the form of key,value pair
+    std::string GetContents() ;
+
+    size_t Capacity()                                   { return _capacity ; }
 
 private:
     size_t _capacity;
@@ -96,5 +99,21 @@ void LRUCache<Key, Value>::Erase(const Key& key) {
     _mutex.unlock() ;
 }
 
+template <typename Key, typename Value>
+std::string LRUCache<Key, Value>::GetContents()
+{
+    _mutex.lock() ;
+    std::string body = "" ;
+    // Iterate over the contents,a nd append to response
+    for (auto &item : _item_list) {
+        body += "Key = " ;
+        body += std::to_string(item.first) ;
+        body += " Value = " ;
+        body += item.second ;
+        body += "\n" ;
+    }
+    _mutex.unlock() ;
+    return body ;
+}
 
 #endif

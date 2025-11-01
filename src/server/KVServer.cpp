@@ -239,9 +239,14 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
     // ------------------ Critical Region Ends --------------------------------
 }
 
-void KVServer::HandleGetPopular(const httplib::Request& req, httplib::Response& res)
+void KVServer::HandleGetPopular(const httplib::Request& , httplib::Response& res)
 {
-    (void) req ; (void) res ;
+#ifdef DEBUG_MODE
+    std::cout << "Printing the contents of the cache" << std::endl ;
+#endif
+    // Get the contents of the cache as the popular data
+    res.set_content(_cache.GetContents(), "text/plain") ;
+    res.status = 200 ;  // Everything is fineeeeee
 }
 
 
