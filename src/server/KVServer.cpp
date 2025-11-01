@@ -3,7 +3,6 @@
 #include <httplib.h>
 #include <stdexcept>
 #include "KVServer.h"
-using namespace std ;
 
 #define PORT 8080
 
@@ -64,6 +63,9 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
         res.set_content("Missing Key parameter", "text/plain") ;
         return ;
     }
+#ifdef DEBUG_MODE
+    std::cout << "Get : " << key_param << std::endl ;
+#endif
     
     std::string value ;
     
@@ -78,6 +80,9 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
 
     if (_cache.Get(int_key, value)) {
         // Cache Hit: Read the value from the cache and return immediately 
+#ifdef DEBUG_MODE
+        std::cout << "[CACHE HIT]" << " Value : " << value << std::endl ;
+#endif
         res.status = 200 ; // OK
         res.set_content(value, "text/plain") ;
         return ; // Skip the database access and mutex lock
@@ -122,6 +127,9 @@ void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
 {
     std::string key_param = req.get_param_value("key");
     std::string value_param = req.get_param_value("value");
+#ifdef DEBUG_MODE
+    std::cout << "Put: " << key_param << " " << value_param << " " << std::endl ;
+#endif
 
     // Some sanity checks before everything else
     if (key_param.empty() || value_param.empty()) {
@@ -171,14 +179,68 @@ void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
 
 void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
 {
-    (void) req ; (void) res ;
+    std::string key_param = req.get_param_value("key");
+    if (key_param.empty()) {
+        res.status = 400 ; // Bad Request
+        res.set_content("Missing Key parameter", "text/plain") ;
+        return ;
+    }
+
+    int int_key = 0;
+    try {
+        int_key = std::stoi(key_param);
+    } catch (const std::exception &e) {
+        res.status = 400;
+        res.set_content("Key must be an integer", "text/plain");
+        return;
+    }
+    
+    // ------------------ Critical Region Begins (DB Delete) -----------------------
+    _db_mutex.lock() ;
+
+    try {
+        // Execute the DELETE operation on the persistent store 
+        mysqlx::Result delete_result = _kv_table.remove()
+                                              .where("k = :k")
+                                              .bind("k", int_key)
+                                              .execute() ;
+        
+        _db_mutex.unlock() ;
+
+        // Check how many rows were deleted.
+        uint64_t rows_deleted = delete_result.getAffectedItemsCount();
+
+        if (rows_deleted > 0) {
+            // DB Hit: Key was successfully deleted from the database.
+            
+            // If the key existed in the database, it MUST be removed from the cache 
+            // to maintain consistency, preventing future requests from reading stale data. 
+            _cache.Erase(int_key) ; 
+
+            res.status = 200 ;
+            res.set_content("Key deleted successfully", "text/plain") ;
+        } else {
+            // Key was not found in the database.
+            // No action is needed on the cache, but we inform the client.
+            res.status = 404 ; // Not Found
+            res.set_content("Key not found in database", "text/plain") ;
+        }
+
+    } catch (const mysqlx::Error &e) {
+        _db_mutex.unlock() ;
+        res.status = 503 ; // Service Unavailable
+        res.set_content(std::string("Database delete failed: ") + e.what(), "text/plain") ;
+    } catch (const std::exception &e) {
+        res.status = 500 ; // Internal Server Error
+        res.set_content(std::string("Internal server error: ") + e.what(), "text/plain") ;
+    }
+    // ------------------ Critical Region Ends --------------------------------
 }
 
 void KVServer::HandleGetPopular(const httplib::Request& req, httplib::Response& res)
 {
     (void) req ; (void) res ;
 }
-
 
 
 

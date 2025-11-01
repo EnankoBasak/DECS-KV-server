@@ -5,6 +5,8 @@
 #include <LRUCache.h>
 #include <mysqlx/xdevapi.h>
 
+#define DEBUG_MODE
+
 class KVServer {
 public:
     // Constructor
