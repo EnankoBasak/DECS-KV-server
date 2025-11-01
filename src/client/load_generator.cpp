@@ -123,19 +123,16 @@ bool execute_workload_request( httplib::Client& client, WorkloadType workload, s
     
     switch (workload) {
         case PUT_ALL:
-            // Put All: Unique key, forces DB write 
             key_int = generate_key(rng) ;
             key_str = std::to_string(key_int) ;
             return execute_put(client, key_str) ;
 
         case GET_ALL:
-            // Get All: Unique key, forces Cache Miss -> DB read 
             key_int = generate_key(rng) ;
             key_str = std::to_string(key_int) ;
             return execute_get(client, key_str) ;
             
         case DELETE_ALL:
-            // Delete All: Unique key, forces DB delete & Cache invalidation 
             key_int = generate_key(rng) ;
             key_str = std::to_string(key_int) ;
             return execute_delete(client, key_str) ;
@@ -172,7 +169,6 @@ bool execute_workload_request( httplib::Client& client, WorkloadType workload, s
 /**
  * @brief Represents a single client thread in the closed loop.
  */
-// void client_worker( int id, const std::string& host, int port, std::chrono::seconds duration, WorkloadType workload, SharedMetrics* metrics)
 void client_worker( int id, int port, std::chrono::seconds duration, WorkloadType workload, SharedMetrics* metrics) 
 {
     std::mt19937 rng(std::random_device{}() + id) ;
@@ -216,11 +212,10 @@ int main(int argc, char* argv[]) {
     // Default Parameters
     int concurrency = 1 ;
     int duration_sec = 10 ;
-    // std::string host = DEFAULT_SERVER_URL ;
     int port = DEFAULT_SERVER_PORT ;
     std::string workload_str = "get_popular" ;
     
-    // Argument Parsing: Expects <concurrency> <duration> <workload> [url:port]
+    // Argument Parsing: Expects <concurrency> <duration> <workload> 
     if (argc >= 2) concurrency = std::stoi(argv[1]) ;
     if (argc >= 3) duration_sec = std::stoi(argv[2]) ;
     if (argc >= 4) workload_str = argv[3] ;
@@ -235,7 +230,6 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Starting Unified Load Test:" << std::endl ;
         std::cout << "  Workload: " << workload_str << std::endl ;
-        //... other prints...
 
         // Execution logic (omitted for brevity, same as before)
         SharedMetrics metrics ;
@@ -244,7 +238,6 @@ int main(int argc, char* argv[]) {
         
         auto test_start_time = std::chrono::steady_clock::now() ;
         for (int i = 0 ; i < concurrency ; ++i) {
-            // workers.emplace_back(client_worker, i, host, port, test_duration, workload, &metrics) ;
             workers.emplace_back(client_worker, i, port, test_duration, workload, &metrics) ;
         }
 
