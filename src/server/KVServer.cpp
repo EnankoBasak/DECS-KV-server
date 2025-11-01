@@ -180,6 +180,9 @@ void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
 void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
 {
     std::string key_param = req.get_param_value("key");
+#ifdef DEBUG_MODE
+    std::cout << "Delete : " << key_param << std::endl ;
+#endif
     if (key_param.empty()) {
         res.status = 400 ; // Bad Request
         res.set_content("Missing Key parameter", "text/plain") ;
@@ -202,17 +205,14 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
         // Execute the DELETE operation on the persistent store 
         mysqlx::Result delete_result = _kv_table.remove()
                                               .where("k = :k")
-                                              .bind("k", int_key)
+                                              .bind("k", key_param)
                                               .execute() ;
-        
         _db_mutex.unlock() ;
-
         // Check how many rows were deleted.
         uint64_t rows_deleted = delete_result.getAffectedItemsCount();
 
         if (rows_deleted > 0) {
             // DB Hit: Key was successfully deleted from the database.
-            
             // If the key existed in the database, it MUST be removed from the cache 
             // to maintain consistency, preventing future requests from reading stale data. 
             _cache.Erase(int_key) ; 
@@ -231,6 +231,7 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
         res.status = 503 ; // Service Unavailable
         res.set_content(std::string("Database delete failed: ") + e.what(), "text/plain") ;
     } catch (const std::exception &e) {
+        _db_mutex.unlock() ;
         res.status = 500 ; // Internal Server Error
         res.set_content(std::string("Internal server error: ") + e.what(), "text/plain") ;
     }
