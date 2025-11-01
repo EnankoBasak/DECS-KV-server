@@ -183,6 +183,7 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
 #ifdef DEBUG_MODE
     std::cout << "Delete : " << key_param << std::endl ;
 #endif
+    // Some sanity checks before everything else
     if (key_param.empty()) {
         res.status = 400 ; // Bad Request
         res.set_content("Missing Key parameter", "text/plain") ;

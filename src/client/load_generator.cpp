@@ -15,10 +15,9 @@ const int DEFAULT_SERVER_PORT = 8080 ;
 const int DEFAULT_TIMEOUT = 5  ;
 
 // Key space size limits
-const long long LARGE_KEY_SPACE = 1000000 ; // For Put All / Get All / Delete All
+const long long LARGE_KEY_SPACE = 10e4 ; // For Put All / Get All / Delete All
 const int SMALL_KEY_SPACE = 100 ;         // For Get Popular
 const size_t VALUE_SIZE = 256 ;           // Payload size
-
 static const char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" ;
 
 // Enum to define the executable workload type
@@ -45,10 +44,8 @@ struct SharedMetrics {
  * Keys wrap around the LARGE_KEY_SPACE to prevent running out of key IDs while 
  * maintaining a consistent workload that hits the database. 
  */
-long long generate_unique_key() {
-    static std::atomic<long long> counter{1} ; 
-    long long current_key = counter.fetch_add(1) ;
-    return (current_key % LARGE_KEY_SPACE) + 1 ; 
+long long generate_key(std::mt19937& rng) {
+    return (rng() % LARGE_KEY_SPACE) ; 
 }
 
 /**
@@ -127,19 +124,19 @@ bool execute_workload_request( httplib::Client& client, WorkloadType workload, s
     switch (workload) {
         case PUT_ALL:
             // Put All: Unique key, forces DB write 
-            key_int = generate_unique_key() ;
+            key_int = generate_key(rng) ;
             key_str = std::to_string(key_int) ;
             return execute_put(client, key_str) ;
 
         case GET_ALL:
             // Get All: Unique key, forces Cache Miss -> DB read 
-            key_int = generate_unique_key() ;
+            key_int = generate_key(rng) ;
             key_str = std::to_string(key_int) ;
             return execute_get(client, key_str) ;
             
         case DELETE_ALL:
             // Delete All: Unique key, forces DB delete & Cache invalidation 
-            key_int = generate_unique_key() ;
+            key_int = generate_key(rng) ;
             key_str = std::to_string(key_int) ;
             return execute_delete(client, key_str) ;
 
@@ -152,7 +149,7 @@ bool execute_workload_request( httplib::Client& client, WorkloadType workload, s
         case GET_PUT_MIX:
         case GET_DELETE_MIX: {
             // Mixed Workloads: Use unique keys to ensure a blend of cache hits and misses
-            key_int = generate_unique_key() ;
+            key_int = generate_key(rng) ;
             key_str = std::to_string(key_int) ;
             
             // Randomly choose the operation (50/50 split)
@@ -262,6 +259,7 @@ int main(int argc, char* argv[]) {
         // Reporting logic 
         auto actual_duration = std::chrono::duration_cast<std::chrono::duration<double>>(test_end_time - test_start_time) ;
         long long successful_requests = metrics.total_successful_requests.load() ;
+        long long requests = metrics.total_requests_sent.load() ;
 
         std::cout << "\n--- Load Test Summary ---" << std::endl ;
         
@@ -272,6 +270,7 @@ int main(int argc, char* argv[]) {
             double avg_throughput = (double)successful_requests / duration_s ;
             double avg_response_time = total_latency_ms / (double)successful_requests ;
 
+            std::cout << "Total Requests: " << requests << std::endl ;
             std::cout << "Total Successful Requests: " << successful_requests << std::endl ;
             std::cout << "Test Duration: " << std::fixed << std::setprecision(2) << duration_s << " s" << std::endl ;
             std::cout << "Average Throughput: " << std::fixed << std::setprecision(2) << avg_throughput << " req/s" << std::endl ;
