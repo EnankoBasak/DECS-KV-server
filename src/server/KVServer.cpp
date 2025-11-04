@@ -71,7 +71,7 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
     
     int int_key = 0;
     try {
-        int_key = std::stoi(key_param);
+        int_key = std::stoll(key_param);
     } catch (const std::exception &e) {
         res.status = 400;
         res.set_content("Key must be an integer", "text/plain");
@@ -97,7 +97,6 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
                                            .where("k = :k")
                                            .bind("k", int_key)
                                            .execute() ;
-        _db_mutex.unlock() ;  // Unlock DB after query
 
         std::size_t row_count = result.count() ;
 
@@ -107,10 +106,12 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
 
             // Store in cache, on successful DB access
             _cache.Put(int_key, value) ;
+            _db_mutex.unlock() ;  // Unlock DB after query and cache update
 
             res.status = 200 ;  // OK
             res.set_content(value, "text/plain") ;
         } else {
+            _db_mutex.unlock() ;  // Unlock DB after query
             res.status = 404 ; // Not Found
             res.set_content("Key not found", "text/plain") ;
         }
@@ -140,7 +141,7 @@ void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
 
     int int_key = 0;
     try {
-        int_key = std::stoi(key_param);
+        int_key = std::stoll(key_param);
     } catch (const std::exception &e) {
         res.status = 400;
         res.set_content("Key must be an integer", "text/plain");
@@ -155,10 +156,10 @@ void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
         _kv_table.insert("k", "value")
                 .values(int_key, value_param)
                 .execute() ;
-        _db_mutex.unlock() ;        // Unlock the DB
 
         // Update the cache.
         _cache.Put(int_key, value_param);
+        _db_mutex.unlock() ;  // Unlock DB after query and cache update
 
         res.status = 200;
         res.set_content("Key-value pair stored successfully", "text/plain");
@@ -192,7 +193,7 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
 
     int int_key = 0;
     try {
-        int_key = std::stoi(key_param);
+        int_key = std::stoll(key_param);
     } catch (const std::exception &e) {
         res.status = 400;
         res.set_content("Key must be an integer", "text/plain");
@@ -208,7 +209,6 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
                                               .where("k = :k")
                                               .bind("k", key_param)
                                               .execute() ;
-        _db_mutex.unlock() ;
         // Check how many rows were deleted.
         uint64_t rows_deleted = delete_result.getAffectedItemsCount();
 
@@ -217,12 +217,14 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
             // If the key existed in the database, it MUST be removed from the cache 
             // to maintain consistency, preventing future requests from reading stale data. 
             _cache.Erase(int_key) ; 
+            _db_mutex.unlock() ;  // Unlock DB after query and cache update
 
             res.status = 200 ;
             res.set_content("Key deleted successfully", "text/plain") ;
         } else {
             // Key was not found in the database.
             // No action is needed on the cache, but we inform the client.
+            _db_mutex.unlock() ;  // Unlock DB after query and cache update
             res.status = 404 ; // Not Found
             res.set_content("Key not found in database", "text/plain") ;
         }

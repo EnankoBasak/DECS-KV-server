@@ -5,7 +5,7 @@
 #include <LRUCache.h>
 #include <mysqlx/xdevapi.h>
 
-#define DEBUG_MODE
+// #define DEBUG_MODE
 
 class KVServer {
 public:
@@ -34,5 +34,5 @@ private:
     mutable std::shared_mutex cache_mutex; // Mutable to allow locking in const methods if needed
 
     httplib::Server _http_server;
-    LRUCache <int, std::string> _cache;
+    LRUCache <long long , std::string> _cache;
 };
