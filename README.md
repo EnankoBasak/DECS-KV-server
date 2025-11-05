@@ -10,9 +10,9 @@ The KV system employs a standard multi-tier design to decouple high-speed cachin
 
 | **Component**      | **Tier**              | **Role**                                                                                                                                                                                | **Technology / Implementation**                                   |
 |--------------------|-----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------|
-| **Load Generator** | Client               | Emulates high-volume concurrent users (closed-loop model) and measures global throughput and response time.                                                                         | C++ (`std::thread`, `cpp-httplib`, `std::atomic`)                 |
+| **Load Generator** | Client               | Emulates high-volume concurrent users (closed-loop model) and measures global throughput and response time.                                                                         | C++17 (`std::thread`, `cpp-httplib`, `std::atomic`)                 |
 | **KV Server**      | Tier 1 (Frontend)    | Multi-threaded HTTP server using `cpp-httplib`. Incorporates a thread-safe **In-Memory Cache (`LRUCache`)** with an LRU eviction policy.                                             | C++17 (`cpp-httplib`)                                             |
-| **Database**       | Tier 2 (Backend)     | Provides persistent storage for all key-value pairs. Serves as the designated I/O bottleneck.                                                                                      | MySQL (`MySQL X DevAPI`)                                          |
+| **Database**       | Tier 2 (Backend)     | Provides persistent storage for all key-value pairs. Serves as the designated I/O bottleneck.                                                                                      | MySQL (`MySQLXDev API`)                                          |
 
 ![System Architecture](Images/example.png)
 
