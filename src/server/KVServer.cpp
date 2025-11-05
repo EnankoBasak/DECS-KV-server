@@ -2,6 +2,7 @@
 #include <thread>
 #include <httplib.h>
 #include <stdexcept>
+#include <cstdlib>
 #include "KVServer.h"
 
 #define PORT 8080
@@ -272,7 +273,7 @@ void KVServer::Run(int port)
 
 int main()
 {
-    KVServer server("kvuser", "#Jhuma1611", "localhost", "kvstore", 100) ;
+    KVServer server(getenv("DB_USER"), getenv("DB_PASS"), getenv("DB_HOST"), getenv("DB_NAME"), 100) ;
     return 0 ;
 }
 

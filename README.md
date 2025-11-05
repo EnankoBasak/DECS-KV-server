@@ -26,13 +26,16 @@ The KV system employs a standard multi-tier design to decouple high-speed cachin
 
 ## Project Directory Structure
 
-The repository is structured to separate source files, build scripts, and external headers (cpp-httplib.h is accessible by the compiler via -I flags).
+The repository is structured to separate source files, build scripts, and external headers (cpp-httplib.h is accessible by the compiler via -I flags).\
+\
 .  
 ├── include/  
+│ &emsp;  ├── httplib.h&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&nbsp;&nbsp;# Header file to include cpp-httplib library  
+│ &emsp;  ├── LRUCache.h &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;# Implementation of a templated LRUCache, to be used by the KVServer    
 ├── build/  
-│ &emsp;  ├── Makefile &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;# Build script for compiling the server and client.  
-│ &emsp;  ├── server &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&nbsp;&nbsp;&nbsp;   # Compiled Server Executable.  
-│  &emsp; └── load_generator     &emsp;   &emsp;   &emsp;          # Compiled Load Test Client Executable.  
+│ &emsp;  ├── Makefile &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&nbsp;&nbsp;&nbsp;# Build script for compiling the server and client.  
+│ &emsp;  ├── server &emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&nbsp;&nbsp;   # Compiled Server Executable.  
+│  &emsp; └── load_generator&emsp;&emsp;&emsp;&nbsp;&nbsp;&nbsp;# Compiled Load Test Client Executable.  
 └── src/  
 |  &emsp;  ├── client/  
 |  &emsp;  │  &emsp;  └── unified_load_generator.cpp  &emsp;&emsp;&emsp;# Unified client for all workloads (GET/PUT/DELETE/MIX).  
