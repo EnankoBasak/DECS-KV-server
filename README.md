@@ -61,6 +61,9 @@ cd build
 make -j
 ```
 
+## Execution and Load Testing
+
+
 To the run the **KVServer**, from inside the ```build``` directory run
 ```
 ./server
@@ -71,7 +74,7 @@ The output should be displayed as
 KVServer is running ...
 ```
 
-To run the load generator, from inside the ```build``` director run
+To run the load generator, from inside the ```build``` directory run
 
 ```
 ./load_generator [number of concurrent threads] [test duration] [workload type]
@@ -88,10 +91,24 @@ get_put_mix
 get_delete_mix  
 ```
 
+To pin a process to a particular CPU Core
+
+```
+taskset -c {CPU Core number} {Executable}
+```
 
 
+The following commands can be used to measure the disk utilization percent.
 
-## Execution and Load Testing
+```
+iostat -ms -x [delay in seconds]
+```
+
+To check the CPU Utilization of a particular core 
+
+```
+mpstat -P {CPU core number} [delay in seconds]
+```
 
 
 

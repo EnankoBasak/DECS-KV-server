@@ -5,8 +5,6 @@
 #include <LRUCache.h>
 #include <mysqlx/xdevapi.h>
 
-// #define DEBUG_MODE
-
 class KVServer {
 public:
     // Constructor
@@ -23,7 +21,7 @@ private:
     void HandleGet(const httplib::Request& req, httplib::Response& res);
     void HandlePut(const httplib::Request& req, httplib::Response& res);
     void HandleDelete(const httplib::Request& req, httplib::Response& res);
-    void HandleGetPopular(const httplib::Request& req, httplib::Response& res);
+    // void HandleGetPopular(const httplib::Request& req, httplib::Response& res);
 
     // Database and Cache
     mysqlx::Session _db_session;

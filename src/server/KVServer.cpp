@@ -54,9 +54,9 @@ void KVServer::setup_routes()
         HandleDelete(req, res);
     });
 
-    _http_server.Get("/get_popular", [this](const httplib::Request &req, httplib::Response &res) {
-        HandleGetPopular(req, res);
-    });
+    // _http_server.Get("/get_popular", [this](const httplib::Request &req, httplib::Response &res) {
+    //     HandleGetPopular(req, res);
+    // });
 }
 
 
@@ -256,15 +256,15 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
     // ------------------ Critical Region Ends --------------------------------
 }
 
-void KVServer::HandleGetPopular(const httplib::Request& , httplib::Response& res)
-{
-#ifdef DEBUG_MODE
-    std::cout << "Printing the contents of the cache" << std::endl ;
-#endif
-    // Get the contents of the cache as the popular data
-    res.set_content(_cache.GetContents(), "text/plain") ;
-    res.status = 200 ;  // Everything is fineeeeee
-}
+// void KVServer::HandleGetPopular(const httplib::Request& , httplib::Response& res)
+// {
+// #ifdef DEBUG_MODE
+//     std::cout << "Printing the contents of the cache" << std::endl ;
+// #endif
+//     // Get the contents of the cache as the popular data
+//     res.set_content(_cache.GetContents(), "text/plain") ;
+//     res.status = 200 ;  // Everything is fineeeeee
+// }
 
 
 

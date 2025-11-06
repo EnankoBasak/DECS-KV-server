@@ -37,6 +37,7 @@ struct SharedMetrics {
     std::atomic<long long> total_requests_sent{0} ;
 } ;
 
+
 // --- Key/Value Generation Logic ---
 
 /**
@@ -79,7 +80,13 @@ std::string generate_value() {
 bool execute_get(httplib::Client& client, const std::string& key) 
 {
     std::string path_with_params = "/get?key=" + key ;
+#ifdef DEBUG_MODE
+        std::cout << "Get : " << key << std::endl ;
+#endif
     if (auto res = client.Get(path_with_params)) {
+#ifdef DEBUG_MODE
+        std::cout << res->body << std::endl ;
+#endif
         return (res->status == 200)  ;
     }
     return false ;
@@ -89,6 +96,9 @@ bool execute_put(httplib::Client& client, const std::string& key)
 {
     std::string value = generate_value() ;
     std::string path_with_params = "/put?key=" + key + "&value=" + value ;
+#ifdef DEBUG_MODE
+        std::cout << "Put: Key : " << key << "Value : " << value << std::endl ;
+#endif
     if (auto res = client.Put(path_with_params, "", "text/plain")) {
 #ifdef DEBUG_MODE
         std::cout << res->body << std::endl ;
@@ -108,13 +118,9 @@ bool execute_delete(httplib::Client& client, const std::string& key)
     return false ;
 }
 
-bool execute_popular(httplib::Client& client) 
+bool execute_popular(httplib::Client& client, const std::string& key) 
 {
-    std::string path_with_params = "/get_popular" ;
-    if (auto res = client.Get(path_with_params)) {
-        return (res->status == 200)  ;
-    }
-    return false ;
+    return execute_get(client, key) ;
 }
 
 // --- Core Load Generation Logic ---
@@ -147,7 +153,7 @@ bool execute_workload_request( httplib::Client& client, WorkloadType workload, s
             // Get Popular: Repeated keys, forces Cache Hit -> CPU bound 
             key_int = generate_popular_key(rng) ;
             key_str = std::to_string(key_int) ;
-            return execute_popular(client) ;
+            return execute_popular(client, key_str) ;
 
         case GET_PUT_MIX:
         case GET_DELETE_MIX: {
