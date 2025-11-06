@@ -15,9 +15,9 @@ const int DEFAULT_SERVER_PORT = 8080 ;
 const int DEFAULT_TIMEOUT = 5  ;
 
 // Key space size limits
-const long long LARGE_KEY_SPACE = 10e4 ; // For Put All / Get All / Delete All
+const long long LARGE_KEY_SPACE = 10e6 ; // For Put All / Get All / Delete All
 const int SMALL_KEY_SPACE = 100 ;         // For Get Popular
-const size_t VALUE_SIZE = 256 ;           // Payload size
+const size_t VALUE_SIZE = 32 ;           // Payload size
 static const char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" ;
 
 // Enum to define the executable workload type
@@ -44,8 +44,11 @@ struct SharedMetrics {
  * Keys wrap around the LARGE_KEY_SPACE to prevent running out of key IDs while 
  * maintaining a consistent workload that hits the database. 
  */
-long long generate_key(std::mt19937& rng) {
-    return (rng() % LARGE_KEY_SPACE) ; 
+long long generate_key() {
+    static std::atomic<long long> counter{1}; 
+    long long current_key = counter.fetch_add(1);
+    // Wrap around the large key space to prevent 404s in long runs
+    return (current_key % LARGE_KEY_SPACE) + 1;
 }
 
 /**
@@ -87,6 +90,9 @@ bool execute_put(httplib::Client& client, const std::string& key)
     std::string value = generate_value() ;
     std::string path_with_params = "/put?key=" + key + "&value=" + value ;
     if (auto res = client.Put(path_with_params, "", "text/plain")) {
+#ifdef DEBUG_MODE
+        std::cout << res->body << std::endl ;
+#endif
         return (res->status == 200)  ; 
     }
     return false ;
@@ -123,17 +129,17 @@ bool execute_workload_request( httplib::Client& client, WorkloadType workload, s
     
     switch (workload) {
         case PUT_ALL:
-            key_int = generate_key(rng) ;
+            key_int = generate_key() ;
             key_str = std::to_string(key_int) ;
             return execute_put(client, key_str) ;
 
         case GET_ALL:
-            key_int = generate_key(rng) ;
+            key_int = generate_key() ;
             key_str = std::to_string(key_int) ;
             return execute_get(client, key_str) ;
             
         case DELETE_ALL:
-            key_int = generate_key(rng) ;
+            key_int = generate_key() ;
             key_str = std::to_string(key_int) ;
             return execute_delete(client, key_str) ;
 
@@ -146,7 +152,7 @@ bool execute_workload_request( httplib::Client& client, WorkloadType workload, s
         case GET_PUT_MIX:
         case GET_DELETE_MIX: {
             // Mixed Workloads: Use unique keys to ensure a blend of cache hits and misses
-            key_int = generate_key(rng) ;
+            key_int = generate_key() ;
             key_str = std::to_string(key_int) ;
             
             // Randomly choose the operation (50/50 split)

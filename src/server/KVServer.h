@@ -29,9 +29,10 @@ private:
     mysqlx::Session _db_session;
     mysqlx::Schema _db;
     mysqlx::Table _kv_table;
+    std::string _upsert_query_string ;
 
     std::mutex _db_mutex;      // protects database session/table
-    mutable std::shared_mutex cache_mutex; // Mutable to allow locking in const methods if needed
+    
 
     httplib::Server _http_server;
     LRUCache <long long , std::string> _cache;

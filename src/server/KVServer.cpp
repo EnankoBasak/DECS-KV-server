@@ -1,3 +1,6 @@
+#define CPPHTTPLIB_THREAD_POOL_COUNT 32     // Define the number of default threads in the httplib server.
+
+
 #include <iostream>
 #include <thread>
 #include <httplib.h>
@@ -18,6 +21,9 @@ KVServer::KVServer(const std::string &user,
       _db_mutex(),
       _cache(init_cache_capacity)
 {
+    // Use this string to "upsert" into the database.
+    _upsert_query_string = "INSERT INTO " + db_name + ".kv" + " (k, value) VALUES (?, ?) " "ON DUPLICATE KEY UPDATE value = VALUES(value)" ;
+
     std::cout << "KVServer running." << std::endl;
     Run(PORT) ;
 }
@@ -91,7 +97,8 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
 
     // Lock
     // ------------------ Critical Region Begins --------------------------------
-    _db_mutex.lock() ;
+    // _db_mutex.lock() ;
+    std::lock_guard<std::mutex> lock(_db_mutex) ;
 
     try {
         mysqlx::RowResult result = _kv_table.select("value")
@@ -107,17 +114,17 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
 
             // Store in cache, on successful DB access
             _cache.Put(int_key, value) ;
-            _db_mutex.unlock() ;  // Unlock DB after query and cache update
+            // _db_mutex.unlock() ;  // Unlock DB after query and cache update
 
             res.status = 200 ;  // OK
             res.set_content(value, "text/plain") ;
         } else {
-            _db_mutex.unlock() ;  // Unlock DB after query
+            // _db_mutex.unlock() ;  // Unlock DB after query
             res.status = 404 ; // Not Found
             res.set_content("Key not found", "text/plain") ;
         }
     } catch (const std::exception &e) {
-        _db_mutex.unlock() ;  // Unlock DB in case of an exception
+        // _db_mutex.unlock() ;  // Unlock DB in case of an exception
         res.status = 500 ; // Internal Server Error
         res.set_content(std::string("Database error: ") + e.what(), "text/plain") ;
     }
@@ -152,24 +159,30 @@ void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
 
     // Lock
     // ------------------ Critical Region Begins --------------------------------
-    _db_mutex.lock() ;
+    std::lock_guard<std::mutex> lock(_db_mutex) ;
+    // _db_mutex.lock() ;
     try {
-        _kv_table.insert("k", "value")
-                .values(int_key, value_param)
-                .execute() ;
+        // _kv_table.insert("k", "value")
+        //         .values(int_key, value_param)
+        //         .execute() ;
+
+        _db_session.sql(_upsert_query_string) 
+            .bind(int_key, value_param)  // only for data values
+            .execute();
+
 
         // Update the cache.
         _cache.Put(int_key, value_param);
-        _db_mutex.unlock() ;  // Unlock DB after query and cache update
+        // _db_mutex.unlock() ;  // Unlock DB after query and cache update
 
         res.status = 200;
         res.set_content("Key-value pair stored successfully", "text/plain");
     } catch (const mysqlx::Error &e) {
-        _db_mutex.unlock() ; // ensure DB mutex is unlocked on error
+        // _db_mutex.unlock() ; // ensure DB mutex is unlocked on error
         res.status = 503 ;
         res.set_content(std::string("Database write failed: ") + e.what(), "text/plain") ;
     } catch (const std::exception &e) {
-        _db_mutex.unlock() ; // ensure DB mutex is unlocked on error
+        // _db_mutex.unlock() ; // ensure DB mutex is unlocked on error
         res.status = 500 ;
         res.set_content(std::string("Server error: ") + e.what(), "text/plain") ;
         return ;
@@ -202,7 +215,8 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
     }
     
     // ------------------ Critical Region Begins (DB Delete) -----------------------
-    _db_mutex.lock() ;
+    std::lock_guard<std::mutex> lock(_db_mutex) ;
+    // _db_mutex.lock() ;
 
     try {
         // Execute the DELETE operation on the persistent store 
@@ -218,24 +232,24 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
             // If the key existed in the database, it MUST be removed from the cache 
             // to maintain consistency, preventing future requests from reading stale data. 
             _cache.Erase(int_key) ; 
-            _db_mutex.unlock() ;  // Unlock DB after query and cache update
+            // _db_mutex.unlock() ;  // Unlock DB after query and cache update
 
             res.status = 200 ;
             res.set_content("Key deleted successfully", "text/plain") ;
         } else {
             // Key was not found in the database.
             // No action is needed on the cache, but we inform the client.
-            _db_mutex.unlock() ;  // Unlock DB after query and cache update
+            // _db_mutex.unlock() ;  // Unlock DB after query and cache update
             res.status = 404 ; // Not Found
             res.set_content("Key not found in database", "text/plain") ;
         }
 
     } catch (const mysqlx::Error &e) {
-        _db_mutex.unlock() ;
+        // _db_mutex.unlock() ;
         res.status = 503 ; // Service Unavailable
         res.set_content(std::string("Database delete failed: ") + e.what(), "text/plain") ;
     } catch (const std::exception &e) {
-        _db_mutex.unlock() ;
+        // _db_mutex.unlock() ;
         res.status = 500 ; // Internal Server Error
         res.set_content(std::string("Internal server error: ") + e.what(), "text/plain") ;
     }
@@ -259,12 +273,14 @@ void KVServer::Run(int port)
     // Runnnn Forrresst Runnnn
     setup_routes();
 
+    // Turn on this code area to accept new connections and process each in its own thread
+#if 0
     _http_server.new_task_queue = [] {
         // Each task (incoming request) gets its own thread
         return new httplib::ThreadPool(1); // 1 thread per task
     };
+#endif
 
-    // This will accept new connections and process each in its own thread
     if (!_http_server.listen("0.0.0.0", port)) {
         std::cerr << "Failed to bind to port " << port << std::endl;
     }

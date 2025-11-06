@@ -46,6 +46,51 @@ The repository is structured to separate source files, build scripts, and extern
 
 ## Build Instructions
 
+The following environment variables need to be set for the application to access the database correctly.
+
+```
+export DB_USER="username for your database"  
+export DB_PASS="password to access your database"  
+export DB_HOST="hostname for your database"  
+export DB_NAME="Name of the table"
+```
+
+Follow the following steps to build the application
+```
+cd build 
+make -j
+```
+
+To the run the **KVServer**, from inside the ```build``` directory run
+```
+./server
+```
+The output should be displayed as 
+
+```
+KVServer is running ...
+```
+
+To run the load generator, from inside the ```build``` director run
+
+```
+./load_generator [number of concurrent threads] [test duration] [workload type]
+```
+
+The number of different workloads supported are 
+
+```
+put                    
+get  
+delete  
+get_popular  
+get_put_mix  
+get_delete_mix  
+```
+
+
+
+
 ## Execution and Load Testing
 
 
