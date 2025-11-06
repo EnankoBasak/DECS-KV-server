@@ -1,6 +1,14 @@
 CXX = g++
-CXXFLAGS = -g -std=c++17 -Wall -Wextra -O3 -I $(ROOT_DIR)/include/
+CXXFLAGS = -std=c++17 -Wall -Wextra -I $(ROOT_DIR)/include/
 LDFLAGS  = -L./lib64 -lmysqlcppconn8 -lpthread
+
+DEBUG ?= 0
+
+ifeq ($(DEBUG),1)
+	CXXFLAGS += -g -DDEBUG_MODE
+else 
+	CXXFLAGS += -O3
+endif
 
 ROOT_DIR = ..
 
