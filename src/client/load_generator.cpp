@@ -45,7 +45,8 @@ struct SharedMetrics {
  * Keys wrap around the LARGE_KEY_SPACE to prevent running out of key IDs while 
  * maintaining a consistent workload that hits the database. 
  */
-long long generate_key() {
+long long generate_key() 
+{
     static std::atomic<long long> counter{1}; 
     long long current_key = counter.fetch_add(1);
     // Wrap around the large key space to prevent 404s in long runs
@@ -55,7 +56,8 @@ long long generate_key() {
 /**
  * @brief Generates a popular key (used for Get Popular to force cache hits).
  */
-long long generate_popular_key(std::mt19937& rng) {
+long long generate_popular_key(std::mt19937& rng) 
+{
     std::uniform_int_distribution<int> dist(1, SMALL_KEY_SPACE) ; 
     return dist(rng) ;
 }
@@ -63,7 +65,8 @@ long long generate_popular_key(std::mt19937& rng) {
 /**
  * @brief Generates a random value string of fixed size.
  */
-std::string generate_value() {
+std::string generate_value() 
+{
     std::string result(VALUE_SIZE, 0) ;
     
     thread_local static std::mt19937 generator(std::random_device{}()) ;
@@ -111,7 +114,13 @@ bool execute_put(httplib::Client& client, const std::string& key)
 bool execute_delete(httplib::Client& client, const std::string& key) 
 {
     std::string path_with_params = "/delete?key=" + key ;
+#ifdef DEBUG_MODE
+        std::cout << "Delete: " << key << std::endl ;
+#endif
     if (auto res = client.Delete(path_with_params)) {
+#ifdef DEBUG_MODE
+        std::cout << res->body << std::endl ;
+#endif
         // 200 OK (deleted) or 404 (not found, which is functionally equivalent to deleted)
         return (res->status == 200 || res->status == 404)  ; 
     }
@@ -183,7 +192,8 @@ bool execute_workload_request( httplib::Client& client, WorkloadType workload, s
  */
 void client_worker( int id, int port, std::chrono::seconds duration, WorkloadType workload, SharedMetrics* metrics) 
 {
-    std::mt19937 rng(std::random_device{}() + id) ;
+    // Fixed seed to generate the same sequence of numbers.
+    std::mt19937 rng(161195 + id) ;
     
     httplib::Client client(DEFAULT_SERVER_URL, port) ;
     client.set_connection_timeout(std::chrono::seconds(DEFAULT_TIMEOUT)) ;
