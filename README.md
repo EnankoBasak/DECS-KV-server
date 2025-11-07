@@ -66,6 +66,13 @@ make -j
 ## Execution and Load Testing
 
 
+To create the MySQL Database 
+
+```
+mysql -u <username> -p < ./scripts/create_kvstore.sql
+```
+
+
 To the run the **KVServer**, from inside the ```build``` directory run
 ```
 ./server
