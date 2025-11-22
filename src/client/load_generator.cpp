@@ -15,7 +15,7 @@ const int DEFAULT_SERVER_PORT = 8080 ;
 const int DEFAULT_TIMEOUT = 5  ;
 
 // Key space size limits
-const long long LARGE_KEY_SPACE = 10e6 ; // For Put All / Get All / Delete All
+const long long LARGE_KEY_SPACE = 10e3 ; // For Put All / Get All / Delete All
 const int SMALL_KEY_SPACE = 100 ;         // For Get Popular
 const size_t VALUE_SIZE = 32 ;           // Payload size
 static const char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" ;
@@ -100,7 +100,7 @@ bool execute_put(httplib::Client& client, const std::string& key)
     std::string value = generate_value() ;
     std::string path_with_params = "/put?key=" + key + "&value=" + value ;
 #ifdef DEBUG_MODE
-        std::cout << "Put: Key : " << key << "Value : " << value << std::endl ;
+        std::cout << "Put: Key : " << key << " Value : " << value << std::endl ;
 #endif
     if (auto res = client.Put(path_with_params, "", "text/plain")) {
 #ifdef DEBUG_MODE
@@ -129,7 +129,17 @@ bool execute_delete(httplib::Client& client, const std::string& key)
 
 bool execute_popular(httplib::Client& client, const std::string& key) 
 {
-    return execute_get(client, key) ;
+    std::string path_with_params = "/get_popular?key=" + key ;
+#ifdef DEBUG_MODE
+        std::cout << "Get Popular: " << key << std::endl ;
+#endif
+    if (auto res = client.Get(path_with_params)) {
+#ifdef DEBUG_MODE
+        std::cout << res->body << std::endl ;
+#endif
+        return (res->status == 200)  ;
+    }
+    return false ;
 }
 
 // --- Core Load Generation Logic ---
