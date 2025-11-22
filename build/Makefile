@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -I $(ROOT_DIR)/include/
-LDFLAGS  = -L./lib64 -lmysqlcppconn8 -lpthread
+LDFLAGS  = -L./lib64 -lmysqlclient -lpthread
 
 DEBUG ?= 0
 
