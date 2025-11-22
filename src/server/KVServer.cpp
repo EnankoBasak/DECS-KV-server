@@ -1,29 +1,45 @@
-#define CPPHTTPLIB_THREAD_POOL_COUNT 32     // Define the number of default threads in the httplib server.
-
-
 #include <iostream>
 #include <thread>
-#include <httplib.h>
-#include <stdexcept>
+#include <string>
+#include <vector>
+#include <shared_mutex>
+#include <chrono>
 #include <cstdlib>
-#include "KVServer.h"
+#include <optional>
+#include <sstream>
+#include <unordered_map>
+#include <mutex>
+#include <future>
 
+#include "KVServer.h"
+#include <LRUCache.h>
+
+#include <httplib.h>
+
+using namespace std::chrono_literals;
 #define PORT 8080
 
-KVServer::KVServer(const std::string &user,
-                   const std::string &password,
-                   const std::string &host,
-                   const std::string &db_name,
-                   const size_t init_cache_capacity)
-    : _db_session(host, 33060, user, password),
-      _db(_db_session.getSchema(db_name)),
-      _kv_table(_db.getTable("kv")),
-      _db_mutex(),
-      _cache(init_cache_capacity)
-{
-    // Use this string to "upsert" into the database.
-    _upsert_query_string = "INSERT INTO " + db_name + ".kv" + " (k, value) VALUES (?, ?) " "ON DUPLICATE KEY UPDATE value = VALUES(value)" ;
+// ------------------------------ DB ACCESS METHODS -------------------------------------
 
+std::optional<std::string> db_select_value(MYSQL* conn, const std::string &db_name, const std::string &table_name, long long key) ; 
+bool db_upsert(MYSQL* conn, const std::string &db_name, const std::string &table_name, long long key, const std::string &value) ; 
+std::pair<bool, uint64_t> db_delete(MYSQL* conn, const std::string &db_name, const std::string &table_name, long long key) ;
+
+// -------------------------------------------------------------------------------------
+
+KVServer::KVServer(const std::string &db_user,
+                   const std::string &db_password,
+                   const std::string &db_host,
+                   const std::string &db_name,
+                   size_t pool_size,
+                   size_t cache_capacity,
+                   const std::string &table_name)
+        :  _pool(pool_size),
+          _dbpool(DBPool (db_host, PORT, db_user, db_password, db_name, pool_size)),
+          _db_name(db_name),
+          _table_name(table_name),
+          _cache(cache_capacity, 8)
+{
     std::cout << "KVServer running." << std::endl;
     Run(PORT) ;
 }
@@ -54,9 +70,9 @@ void KVServer::setup_routes()
         HandleDelete(req, res);
     });
 
-    // _http_server.Get("/get_popular", [this](const httplib::Request &req, httplib::Response &res) {
-    //     HandleGetPopular(req, res);
-    // });
+    _http_server.Get("/get_popular", [this](const httplib::Request &req, httplib::Response &res) {
+        HandleGetPopular(req, res);
+    });
 }
 
 
@@ -73,7 +89,7 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
 #ifdef DEBUG_MODE
     std::cout << "Get : " << key_param << std::endl ;
 #endif
-    
+
     std::string value ;
     
     int int_key = 0;
@@ -95,41 +111,46 @@ void KVServer::HandleGet(const httplib::Request& req, httplib::Response& res)
         return ; // Skip the database access and mutex lock
     }
 
-    // Lock
-    // ------------------ Critical Region Begins --------------------------------
-    // _db_mutex.lock() ;
-    std::lock_guard<std::mutex> lock(_db_mutex) ;
+    // Acquire DB connection
+#if 0
+    // Async DB read using thread pool
+    auto fut = _pool.submit([this, int_key]() -> std::optional<std::string> {
+            auto conn = _dbpool.acquire();
+            return db_select_value(conn.get(), _db_name, _table_name, int_key);
+            });
 
-    try {
-        mysqlx::RowResult result = _kv_table.select("value")
-                                           .where("k = :k")
-                                           .bind("k", int_key)
-                                           .execute() ;
-
-        std::size_t row_count = result.count() ;
-
-        if (row_count > 0) {
-            mysqlx::Row row = result.fetchOne() ;
-            value = row[0].get<std::string>() ;
-
-            // Store in cache, on successful DB access
-            _cache.Put(int_key, value) ;
-            // _db_mutex.unlock() ;  // Unlock DB after query and cache update
-
-            res.status = 200 ;  // OK
-            res.set_content(value, "text/plain") ;
-        } else {
-            // _db_mutex.unlock() ;  // Unlock DB after query
-            res.status = 404 ; // Not Found
-            res.set_content("Key not found", "text/plain") ;
-        }
-    } catch (const std::exception &e) {
-        // _db_mutex.unlock() ;  // Unlock DB in case of an exception
-        res.status = 500 ; // Internal Server Error
-        res.set_content(std::string("Database error: ") + e.what(), "text/plain") ;
+    // Wait for DB result (can also return immediately with async response if needed)
+    auto opt = fut.get();
+    if (!opt.has_value()) {
+        res.status = 404; res.set_content("Key not found", "text/plain");
+        return;
     }
-    // ------------------ Critical Region Ends --------------------------------
-    // Unlock
+
+    value = opt.value();
+    _cache.Put(int_key, value);
+    res.status = 200; res.set_content(value, "text/plain");
+#else
+    auto conn = _dbpool.acquire();
+    if (!conn) {
+        res.status = 503;
+        res.set_content("No DB connection available", "text/plain");
+        return;
+    }
+
+    auto opt = db_select_value(conn.get(), _db_name, _table_name, int_key);
+    if (!opt.has_value()) {
+        res.status = 404;
+        res.set_content("Key not found", "text/plain");
+        return;
+    }
+
+    value = opt.value();
+    // update cache
+    _cache.Put(int_key, value);
+
+    res.status = 200;
+    res.set_content(value, "text/plain");
+#endif
 }
 
 void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
@@ -156,55 +177,138 @@ void KVServer::HandlePut(const httplib::Request& req, httplib::Response& res)
         return;
     }
 
+    // Acquire DB connection
+#if 1
+    auto fut = _pool.submit([this, int_key, value_param]() -> bool {
+            auto conn = _dbpool.acquire();
+            return db_upsert(conn.get(), _db_name, _table_name, int_key, value_param);
+            });
 
-    // Lock
-    // ------------------ Critical Region Begins --------------------------------
-    std::lock_guard<std::mutex> lock(_db_mutex) ;
-    // _db_mutex.lock() ;
-    try {
-        // _kv_table.insert("k", "value")
-        //         .values(int_key, value_param)
-        //         .execute() ;
+    bool ok = false;
+    try { ok = fut.get(); } catch (...) { ok = false; }
 
-        _db_session.sql(_upsert_query_string) 
-            .bind(int_key, value_param)  // only for data values
-            .execute();
-
-
-        // Update the cache.
-        _cache.Put(int_key, value_param);
-        // _db_mutex.unlock() ;  // Unlock DB after query and cache update
-
-        res.status = 200;
-        res.set_content("Key-value pair stored successfully", "text/plain");
-    } catch (const mysqlx::Error &e) {
-        // _db_mutex.unlock() ; // ensure DB mutex is unlocked on error
-        res.status = 503 ;
-        res.set_content(std::string("Database write failed: ") + e.what(), "text/plain") ;
-    } catch (const std::exception &e) {
-        // _db_mutex.unlock() ; // ensure DB mutex is unlocked on error
-        res.status = 500 ;
-        res.set_content(std::string("Server error: ") + e.what(), "text/plain") ;
-        return ;
+    if (!ok) {
+        res.status = 500;
+        res.set_content("Database write failed", "text/plain");
+        return;
     }
-    // ------------------ Critical Region Ends --------------------------------
-    // Unlock
 
+    _cache.Put(int_key, value_param);
+    res.status = 200;
+    res.set_content("Key-value pair stored successfully", "text/plain");
+
+#else
+    auto conn = _dbpool.acquire();
+    if (!conn) {
+        res.status = 503;
+        res.set_content("No DB connection available", "text/plain");
+        return;
+    }
+
+    bool ok = db_upsert(conn.get(), _db_name, _table_name, int_key, value_param);
+    if (!ok) {
+        res.status = 503;
+        std::string err = mysql_error(conn.get());
+        res.set_content(std::string("Database write failed: ") + err, "text/plain");
+        return;
+    }
+
+    // Update cache
+    _cache.Put(int_key, value_param);
+
+    res.status = 200;
+    res.set_content("Key-value pair stored successfully", "text/plain");
+#endif
 }
 
-void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
+void KVServer::HandleDelete(const httplib::Request &req, httplib::Response &res)
 {
     std::string key_param = req.get_param_value("key");
-#ifdef DEBUG_MODE
-    std::cout << "Delete : " << key_param << std::endl ;
-#endif
     // Some sanity checks before everything else
+    if (key_param.empty()) {
+        res.status = 400 ;
+        res.set_content("Missing Key parameter", "text/plain") ;
+        return ;
+    }
+    long long int_key = 0;
+    try { int_key = std::stoll(key_param); }
+    catch (...) {
+        res.status = 400;
+        res.set_content("Key must be integer", "text/plain");
+        return;
+    }
+#if 1
+    auto fut = _pool.submit([this, int_key]() -> std::pair<bool,uint64_t> {
+            auto conn = _dbpool.acquire();
+            return db_delete(conn.get(), _db_name, _table_name, int_key);
+            });
+
+    bool ok = false;
+    uint64_t affected = 0;
+    try {
+        auto res_pair = fut.get();
+        ok = res_pair.first;
+        affected = res_pair.second;
+    } catch (...) { ok = false; }
+
+    if (!ok) {
+        res.status = 500;
+        res.set_content("Database delete failed", "text/plain");
+        return;
+    }
+
+    if (affected > 0) {
+        _cache.Erase(int_key);
+        res.status = 200;
+        res.set_content("Key deleted successfully", "text/plain");
+    } else {
+        res.status = 404;
+        res.set_content("Key not found in database", "text/plain");
+    }
+
+#else 
+    auto conn = _dbpool.acquire();
+    if (!conn) {
+        res.status = 503;
+        res.set_content("No DB connection available", "text/plain");
+        return;
+    }
+
+    auto [ok, affected] = db_delete(conn.get(), _db_name, _table_name, int_key);
+    if (!ok) {
+        res.status = 503;
+        std::string err = mysql_error(conn.get());
+        res.set_content(std::string("Database delete failed: ") + err, "text/plain");
+        return;
+    }
+
+    if (affected > 0) {
+        _cache.Erase(int_key);
+        res.status = 200;
+        res.set_content("Key deleted successfully", "text/plain");
+    } else {
+        res.status = 404;
+        res.set_content("Key not found in database", "text/plain");
+    }
+#endif
+}
+
+void KVServer::HandleGetPopular(const httplib::Request& req, httplib::Response& res)
+{
+    // Some sanity checks before everything else
+    std::string key_param = req.get_param_value("key");
+    // This is a bad request, the parameter is missing
     if (key_param.empty()) {
         res.status = 400 ; // Bad Request
         res.set_content("Missing Key parameter", "text/plain") ;
         return ;
     }
+#ifdef DEBUG_MODE
+    std::cout << "Get : " << key_param << std::endl ;
+#endif
 
+    std::string value ;
+    
     int int_key = 0;
     try {
         int_key = std::stoll(key_param);
@@ -213,83 +317,134 @@ void KVServer::HandleDelete(const httplib::Request& req, httplib::Response& res)
         res.set_content("Key must be an integer", "text/plain");
         return;
     }
-    
-    // ------------------ Critical Region Begins (DB Delete) -----------------------
-    std::lock_guard<std::mutex> lock(_db_mutex) ;
-    // _db_mutex.lock() ;
 
-    try {
-        // Execute the DELETE operation on the persistent store 
-        mysqlx::Result delete_result = _kv_table.remove()
-                                              .where("k = :k")
-                                              .bind("k", key_param)
-                                              .execute() ;
-        // Check how many rows were deleted.
-        uint64_t rows_deleted = delete_result.getAffectedItemsCount();
-
-        if (rows_deleted > 0) {
-            // DB Hit: Key was successfully deleted from the database.
-            // If the key existed in the database, it MUST be removed from the cache 
-            // to maintain consistency, preventing future requests from reading stale data. 
-            _cache.Erase(int_key) ; 
-            // _db_mutex.unlock() ;  // Unlock DB after query and cache update
-
-            res.status = 200 ;
-            res.set_content("Key deleted successfully", "text/plain") ;
-        } else {
-            // Key was not found in the database.
-            // No action is needed on the cache, but we inform the client.
-            // _db_mutex.unlock() ;  // Unlock DB after query and cache update
-            res.status = 404 ; // Not Found
-            res.set_content("Key not found in database", "text/plain") ;
-        }
-
-    } catch (const mysqlx::Error &e) {
-        // _db_mutex.unlock() ;
-        res.status = 503 ; // Service Unavailable
-        res.set_content(std::string("Database delete failed: ") + e.what(), "text/plain") ;
-    } catch (const std::exception &e) {
-        // _db_mutex.unlock() ;
-        res.status = 500 ; // Internal Server Error
-        res.set_content(std::string("Internal server error: ") + e.what(), "text/plain") ;
+    if (_cache.Get(int_key, value)) {
+        // Cache Hit: Read the value from the cache and return immediately 
+#ifdef DEBUG_MODE
+        std::cout << "[CACHE HIT]" << " Value : " << value << std::endl ;
+#endif
+        res.status = 200 ; // OK
+        res.set_content(value, "text/plain") ;
+        return ; // Skip the database access and mutex lock
     }
-    // ------------------ Critical Region Ends --------------------------------
+
+    // Acquire DB connection
+#if 1
+    // Async DB read using thread pool
+    auto fut = _pool.submit([this, int_key]() -> std::optional<std::string> {
+            auto conn = _dbpool.acquire();
+            return db_select_value(conn.get(), _db_name, _table_name, int_key);
+            });
+
+    // Wait for DB result (can also return immediately with async response if needed)
+    auto opt = fut.get();
+    if (!opt.has_value()) {
+        res.status = 404; res.set_content("Key not found", "text/plain");
+        return;
+    }
+
+    value = opt.value();
+    _cache.Put(int_key, value);
+    res.status = 200; res.set_content(value, "text/plain");
+#else
+    auto conn = _dbpool.acquire();
+    if (!conn) {
+        res.status = 503;
+        res.set_content("No DB connection available", "text/plain");
+        return;
+    }
+
+    auto opt = db_select_value(conn.get(), _db_name, _table_name, int_key);
+    if (!opt.has_value()) {
+        res.status = 404;
+        res.set_content("Key not found", "text/plain");
+        return;
+    }
+
+    value = opt.value();
+    // update cache
+    _cache.Put(int_key, value);
+
+    res.status = 200;
+    res.set_content(value, "text/plain");
+#endif
 }
 
-// void KVServer::HandleGetPopular(const httplib::Request& , httplib::Response& res)
-// {
-// #ifdef DEBUG_MODE
-//     std::cout << "Printing the contents of the cache" << std::endl ;
-// #endif
-//     // Get the contents of the cache as the popular data
-//     res.set_content(_cache.GetContents(), "text/plain") ;
-//     res.status = 200 ;  // Everything is fineeeeee
-// }
+// --------------------------- Utility helpers ---------------------------
+std::string esc_string(MYSQL* conn, const std::string &s) 
+{
+    if (!conn) return "";
+    std::string out;
+    out.resize(s.size() * 2 + 1);
+    unsigned long out_len = mysql_real_escape_string(conn, out.data(), s.c_str(), s.size());
+    out.resize(out_len);
+    return out;
+}
 
+// ----------------------------------------------------------------------------
 
+std::optional<std::string> db_select_value(MYSQL* conn, const std::string &db_name, const std::string &table_name, long long key) 
+{
+    if (!conn) return std::nullopt;
+    // Build query: SELECT value FROM db.table WHERE k = <key> LIMIT 1
+    std::string q = "SELECT value FROM " + db_name + "." + table_name + " WHERE k = " + std::to_string(key) + " LIMIT 1";
+    if (mysql_query(conn, q.c_str())) {
+        // error
+        return std::nullopt;
+    }
+    MYSQL_RES* res = mysql_store_result(conn);
+    if (!res) return std::nullopt;
+    MYSQL_ROW row = mysql_fetch_row(res);
+    std::optional<std::string> ret = std::nullopt;
+    if (row) {
+        unsigned long *lengths = mysql_fetch_lengths(res);
+        if (lengths && lengths[0] > 0) {
+            ret = std::string(row[0], lengths[0]);
+        } else {
+            ret = std::string(); // empty string
+        }
+    }
+    mysql_free_result(res);
+    return ret;
+}
 
-void KVServer::Run(int port)
+bool db_upsert(MYSQL* conn, const std::string &db_name, const std::string &table_name, long long key, const std::string &value) 
+{
+    if (!conn) return false;
+    std::string val_esc = esc_string(conn, value);
+    std::string q = "INSERT INTO " + db_name + "." + table_name + " (k, value) VALUES (" +
+                    std::to_string(key) + ", '" + val_esc + "') ON DUPLICATE KEY UPDATE value = VALUES(value)";
+    if (mysql_query(conn, q.c_str())) {
+        return false;
+    }
+    return true;
+}
+
+std::pair<bool, uint64_t> db_delete(MYSQL* conn, const std::string &db_name, const std::string &table_name, long long key)
+{
+    if (!conn) return {false, 0};
+    std::string q = "DELETE FROM " + db_name + "." + table_name + " WHERE k = " + std::to_string(key);
+    if (mysql_query(conn, q.c_str())) {
+        return {false, 0};
+    }
+    my_ulonglong affected = mysql_affected_rows(conn);
+    return {true, static_cast<uint64_t>(affected)};
+}
+
+void KVServer::Run(int port) 
 {
     // Runnnn Forrresst Runnnn
-    setup_routes();
-
-    // Turn on this code area to accept new connections and process each in its own thread
-#if 0
-    _http_server.new_task_queue = [] {
-        // Each task (incoming request) gets its own thread
-        return new httplib::ThreadPool(1); // 1 thread per task
-    };
-#endif
+    setup_routes() ;
+    std::cout << "Listening on 0.0.0.0:" << port << std::endl;
 
     if (!_http_server.listen("0.0.0.0", port)) {
         std::cerr << "Failed to bind to port " << port << std::endl;
     }
 }
 
-
-int main()
+int main() 
 {
-    KVServer server(getenv("DB_USER"), getenv("DB_PASS"), getenv("DB_HOST"), getenv("DB_NAME"), 100) ;
-    return 0 ;
+    KVServer server(getenv("DB_USER"), getenv("DB_PASS"), getenv("DB_HOST"), getenv("DB_NAME"), 8);
+    return 0;
 }
 

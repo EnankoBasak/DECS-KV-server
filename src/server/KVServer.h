@@ -8,7 +8,6 @@
 #include <queue>
 #include <cassert>
 #include <future>
-#include <openssl/sha.h>
 #include <mysql/mysql.h>
 
 class ThreadPool {
